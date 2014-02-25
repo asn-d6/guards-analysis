@@ -61,7 +61,8 @@ class Guards(object):
         sum_guard_prob = 0.0
         for guard in self.guards:
             sum_guard_prob += guard.guard_prob
-        assert(int(sum_guard_prob*100) == int(100))
+        # XXX not entirely correct because of round() but meh
+        assert(round(sum_guard_prob*100) == int(100))
 
     # Get the diversity of the current guard selection
     def get_diversity(self):
@@ -97,6 +98,15 @@ class Guards(object):
                         len(self.guards), len(new_guard_list))
 
         self.guards = new_guard_list
+
+    # Return list containing the probability distribution of the guards.
+    def get_prob_distr(self):
+        prob_distr = []
+        for guard in self.guards:
+            assert(guard.guard_prob)
+            prob_distr.append(guard.guard_prob)
+
+        return prob_distr
 
     def __len__(self):
         return len(self.guards)
