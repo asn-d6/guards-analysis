@@ -70,6 +70,8 @@ def main():
               "probability distribution after pruning at %s kB/s [%d guards]" % (speed_threshold, len(pruned_prob_distr)))
 #   sns.violinplot(distrs, names=labels, inner="points", color="Set3")
     sns.boxplot(distrs, names=labels, color="Set2")
+#    sns.kdeplot(original_prob_distr, cumulative=True)
+
 
     plt.show()
 

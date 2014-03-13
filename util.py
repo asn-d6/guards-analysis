@@ -1,6 +1,9 @@
 import logging
 import math
 
+from stem.descriptor import parse_file, DocumentHandler
+from stem.descriptor.reader import DescriptorReader
+
 # A set of guards
 class Guards(object):
     def __init__(self):
@@ -94,8 +97,8 @@ class Guards(object):
             if guard.bandwidth >= threshold:
                 new_guard_list.append(guard)
 
-        logging.warning("Before pruning: %d guards. After pruning: %d guards",
-                        len(self.guards), len(new_guard_list))
+        logging.info("Before pruning: %d guards. After pruning: %d guards",
+                     len(self.guards), len(new_guard_list))
 
         self.guards = new_guard_list
 
@@ -108,14 +111,86 @@ class Guards(object):
 
         return prob_distr
 
+    def get_bw_list(self):
+        bw_list = []
+        for guard in self.guards:
+            assert(guard.bandwidth)
+            if guard.desc_bandwidth:
+                bw_list.append(guard.desc_bandwidth)
+            else:
+                bw_list.append(guard.bandwidth)
+
+        return bw_list
+
+    def get_total_bw(self):
+        total_bw = 0
+        for guard in self.guards:
+            if not guard.bandwidth:
+                logging.warning("get_total_bw no bandwidth !")
+                continue
+
+            if guard.desc_bandwidth:
+                total_bw += guard.desc_bandwidth
+            else:
+                total_bw += guard.bandwidth
+
+        return total_bw
+
+    def get_biggest_guard(self):
+        bw_sorted_guards = sorted(self.guards, key=lambda x: x.guard_prob)
+        return bw_sorted_guards[-1]
+
+    def get_median_guard(self):
+        bw_sorted_guards = sorted(self.guards, key=lambda x: x.guard_prob)
+        median_n = len(bw_sorted_guards)/2
+        return bw_sorted_guards[median_n]
+
+    def get_smallest_guard(self):
+        bw_sorted_guards = sorted(self.guards, key=lambda x: x.guard_prob)
+        return bw_sorted_guards[0]
+
+    def get_probs_after_merge_duplicate_bw(self):
+        """Merge all guards with the same bandwidth and return the new bw list
+        and probability disitribution. Useful for CDF calculation.
+        """
+
+        final_bw_list = []
+        final_probs = []
+
+        sorted_uniq_bw_list = set(self.get_bw_list())
+        for bw in sorted(sorted_uniq_bw_list):
+            bw_prob = 0.0
+
+            for guard in self.guards:
+                if guard.desc_bandwidth and guard.desc_bandwidth == bw:
+                    bw_prob += guard.guard_prob
+                elif guard.bandwidth == bw:
+                    bw_prob += guard.guard_prob
+
+            final_bw_list.append(bw)
+            final_probs.append(bw_prob)
+
+        return final_bw_list, final_probs
+
+    def update_bw_of_guard_by_fpr(self, fingerprint, new_bw):
+        for guard in self.guards:
+            if guard.fingerprint == fingerprint:
+                logging.debug("Updating %s from %s to %s", fingerprint, guard.bandwidth, new_bw)
+                guard.set_desc_bandwidth(new_bw)
+
+
     def __len__(self):
         return len(self.guards)
 
 # A guard
 class Guard():
-    def __init__(self):
+    def __init__(self, nickname, fingerprint):
+        self.nickname = nickname
+        self.fingerprint = fingerprint
+
         # bandwidth in kilobytes per second according to dir-spec.txt
         self.bandwidth = None
+        self.desc_bandwidth = None
         self.is_also_exit = None
 
         self.guard_weight = None
@@ -123,6 +198,9 @@ class Guard():
 
     def set_bandwidth(self, bw):
            self.bandwidth = bw
+
+    def set_desc_bandwidth(self, bw):
+           self.desc_bandwidth = bw
 
     def set_flags(self, values):
            if "Exit" in values and not "BadExit" in values:
@@ -135,63 +213,45 @@ class Guard():
     def set_guard_prob(self, guard_prob):
         self.guard_prob = guard_prob
 
-# XXX is this correct?
-def parse_bw_weights(values):
-    data = {}
-    try:
-        for value in values:
-            key, value = value.split("=")
-            data[key] = float(value) / 10000
-        return data
-    except:
-        return None
 
 # Parse consensus. If a relay is a guard, parse its attributes,
 # and add it to our guard list.
-def parse_consensus(fname):
+def parse_consensus(fname, desc_fname=None):
     guards = Guards()
 
-    with open(fname, 'r') as f:
-        guard = None
-        Wgd, Wgg = 1, 1
+    with open(fname, 'rb') as consensus_file:
+        consensus = parse_file(consensus_file, 'network-status-consensus-3 1.0', document_handler = DocumentHandler.DOCUMENT).next()
 
-        for line in f.readlines():
-            key = line.split()[0]
-            values = line.split()[1:]
-            if key =='r': # new router line
-                guard = None
-
-            elif key == 's': # flags line
-                if not "Guard" in values: # ignore non-guards
-                    continue
-
-                # It's a guard. Instantiate a new guard!
-                guard = Guard()
-                guard.set_flags(values)
+        for router in consensus.routers.values():
+            if 'Guard' in router.flags:
+                guard = Guard(router.nickname, router.fingerprint)
+                # XXX These should just be arguments to the __init__ of Guard:
+                guard.set_flags(router.flags)
+                guard.set_bandwidth(router.bandwidth)
                 guards.add(guard)
 
-            elif key == 'w': # bandwidth line
-                if not guard:
-                    continue
+                logging.debug("Saw %s with %s (%s)", router.nickname, router.flags, router.bandwidth)
 
-                # It's the bandwidth details of a guard!
-                # XXX is this the bandwidth value we should use?
-                # XXX is this kB/s or unitless???
-                router_bw = int(values[0].split('=')[1])
-                guard.set_bandwidth(router_bw)
-
-            elif key == 'bandwidth-weights': # bandwidth weights line
-                data = parse_bw_weights(values)
-                try:
-                    Wgd = data['Wgd']
-                    Wgg = data['Wgg']
-                except:
-                    logging.warning("Weight not found!")
-                    pass
-
-                guards.set_consensus_parameters(Wgd, Wgg)
-                logging.debug("[*] Wgd: %s. Wgg: %s", Wgd, Wgg)
+        Wgd = consensus.bandwidth_weights['Wgd'] / float(10000)
+        Wgg = consensus.bandwidth_weights['Wgg'] / float(10000)
+        guards.set_consensus_parameters(Wgd, Wgg)
+        logging.debug("Wgd: %s, Wgg: %s", Wgd, Wgg)
 
     assert(len(guards) > 0)
+
+    # If no descriptor files were provided, we are done!
+    if not desc_fname:
+        return guards
+
+    logging.warning("Using descriptor bandwidths!")
+    # If a descriptor file was provided, parse it and use those bandwidths instead.
+    with open(desc_fname, 'rb') as desc_file:
+        descs = parse_file(desc_file, 'server-descriptor 1.0')
+
+        # XXX most inefficient method ever.
+        for desc in descs:
+            bandwidth = min(desc.average_bandwidth, desc.burst_bandwidth, desc.observed_bandwidth)
+            bandwidth = bandwidth >> 10 # from (bytes per second) to (kilobytes per second)
+            guards.update_bw_of_guard_by_fpr(desc.fingerprint, bandwidth)
 
     return guards
