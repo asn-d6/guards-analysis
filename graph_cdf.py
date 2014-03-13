@@ -65,8 +65,9 @@ def sample_three_guards(bw_list, prob_list):
     # that each user uses 3 guards
     assert(SAMPLES_N % 3 == 0)
     users_n = SAMPLES_N / 3
+
+    # get average guard bw for each user
     for i in xrange(users_n):
-        # get best guard bw for each user
         logging.debug("Choosing best from %d:%d:%d",bw_samples[3*i],bw_samples[3*i+1],bw_samples[3*i+2])
         guard_bw_1 = bw_samples[3*i]
         guard_bw_2 = bw_samples[3*i+1]
